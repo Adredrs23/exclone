@@ -1,10 +1,24 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Canvas, Rect, Line, Ellipse, PencilBrush, FabricObject } from 'fabric';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+	Canvas,
+	Rect,
+	Line,
+	Ellipse,
+	PencilBrush,
+	FabricObject,
+	util,
+} from 'fabric';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
+import { io, Socket } from 'socket.io-client';
+import { v4 as uuidv4 } from 'uuid';
+
+export function generateId() {
+	return uuidv4();
+}
 
 export type Tool =
 	| 'draw'
@@ -21,63 +35,184 @@ export function Whiteboard() {
 	const [tool, setTool] = useState<Tool>('draw');
 	const [brushColor, setBrushColor] = useState('#000000');
 	const [brushSize, setBrushSize] = useState(3);
+	const socketRef = useRef<Socket | null>(null);
 
 	const handleToolClick = useCallback((t: Tool) => () => setTool(t), [setTool]);
 
+	const toolOptions = useMemo(
+		() => ['draw', 'select', 'rectangle', 'line', 'ellipse', 'clear'] as Tool[],
+		[]
+	);
+
+	const handleColorChange = useCallback(
+		(e: React.ChangeEvent<HTMLInputElement>) => setBrushColor(e.target.value),
+		[]
+	);
+
+	const handleSizeChange = useCallback(
+		(val: number[]) => setBrushSize(val[0]),
+		[]
+	);
+
 	// Initialize canvas only once
 	useEffect(() => {
-		if (isInitializedRef.current) return;
+		const init = async () => {
+			if (isInitializedRef.current) return;
 
-		const canvasEl = canvasRef.current;
-		if (!canvasEl) return;
+			const canvasEl = canvasRef.current;
+			if (!canvasEl) return;
 
-		const canvas = new Canvas(canvasEl, {
-			backgroundColor: '#fff',
-		});
+			const socket = await io('http://localhost:8080');
+			socketRef.current = socket;
+			console.log(socket);
 
-		canvas.setDimensions({
-			width: window.innerWidth,
-			height: window.innerHeight - 80,
-		});
-		canvas.renderAll();
+			FabricObject.prototype.toObject = (function (toObject) {
+				return function (this: FabricObject, properties: string[] = []) {
+					return toObject.call(this, [...properties, 'id']);
+				};
+			})(FabricObject.prototype.toObject);
 
-		fabricCanvasRef.current = canvas;
-		isInitializedRef.current = true;
+			const canvas = new Canvas(canvasEl, {
+				backgroundColor: '#fff',
+			});
 
-		const resize = () => {
 			canvas.setDimensions({
 				width: window.innerWidth,
 				height: window.innerHeight - 80,
 			});
 			canvas.renderAll();
-		};
 
-		window.addEventListener('resize', resize);
+			fabricCanvasRef.current = canvas;
+			isInitializedRef.current = true;
 
-		// Delete key
-		const handleKeyDown = (e: KeyboardEvent) => {
-			if (e.key === 'Delete' || e.key === 'Backspace') {
-				const active = canvas.getActiveObject();
+			const resize = () => {
+				canvas.setDimensions({
+					width: window.innerWidth,
+					height: window.innerHeight - 80,
+				});
+				canvas.renderAll();
+			};
 
-				if (active) {
-					canvas.remove(active);
+			// Delete key
+			const handleKeyDown = (e: KeyboardEvent) => {
+				if (e.key === 'Delete' || e.key === 'Backspace') {
+					const active = canvas.getActiveObject();
+
+					if (active) {
+						canvas.remove(active);
+						canvas.renderAll();
+					}
+				}
+			};
+
+			// socket events
+			// Emit events to server
+			canvas.on('object:added', (e) => {
+				if (!e.target) return;
+				if (!e.target.id) {
+					e.target.id = generateId(); // Add ID if it doesn't exist
+				}
+
+				if (e.target.__skipEmit) return;
+				socket.emit('object:added', e.target.toJSON(['id']));
+			});
+
+			canvas.on('object:modified', (e) => {
+				const obj = e.target;
+				if (!obj || obj.__skipEmit) return;
+
+				socket.emit('object:modified', obj.toJSON(['id']));
+			});
+
+			canvas.on('object:removed', (e) => {
+				const obj = e.target;
+				if (!obj || obj.__skipEmit) return;
+
+				socket.emit('object:removed', obj.toJSON(['id']));
+			});
+
+			// Listen for events from server
+			socket.on('object:added', (objectData) => {
+				console.log('objectData', objectData);
+
+				util
+					.enlivenObjects([objectData])
+					.then(([obj]) => {
+						if (
+							!canvas.getObjects().find((o) => o.get('id') === obj.get('id'))
+						) {
+							obj.__skipEmit = true;
+							canvas.add(obj);
+							canvas.renderAll();
+						}
+					})
+					.catch(console.error);
+			});
+
+			socket.on('object:modified', (objectData) => {
+				const obj = canvas
+					.getObjects()
+					.find((o) => o.get('id') === objectData.id);
+				if (obj) {
+					obj.__skipEmit = true;
+					obj.set({ ...objectData });
 					canvas.renderAll();
 				}
-			}
+			});
+
+			socket.on('object:removed', (objectData) => {
+				const obj = canvas
+					.getObjects()
+					.find((o) => o.get('id') === objectData.id);
+				if (obj) {
+					obj.__skipEmit = true;
+					canvas.remove(obj);
+					canvas.renderAll();
+				}
+			});
+
+			socket.on('canvas:clear', () => {
+				canvas.clear();
+			});
+
+			socket.on('object:sync', (payload) => {
+				util.enlivenObjects(payload.objects).then((objects) => {
+					canvas.clear();
+					objects.forEach((obj) => {
+						obj.__skipEmit = true;
+						canvas.add(obj);
+					});
+					canvas.renderAll();
+				});
+			});
+
+			window.addEventListener('resize', resize);
+			window.addEventListener('keydown', handleKeyDown);
+
+			return () => {
+				window.removeEventListener('resize', resize);
+				window.removeEventListener('keydown', handleKeyDown);
+				socket.off('object:added');
+				socket.off('object:removed');
+				socket.off('object:modified');
+				socket.off('object:sync');
+
+				if (socketRef.current) {
+					socketRef.current.disconnect();
+					socketRef.current = null;
+					console.log('Socket disconnected');
+				}
+
+				// canvas.dispose();
+				// Only dispose the canvas when the component is unmounted
+				if (fabricCanvasRef.current) {
+					fabricCanvasRef.current.dispose();
+					fabricCanvasRef.current = null;
+				}
+			};
 		};
 
-		window.addEventListener('keydown', handleKeyDown);
-
-		return () => {
-			window.removeEventListener('resize', resize);
-			window.removeEventListener('keydown', handleKeyDown);
-			// canvas.dispose();
-			// Only dispose the canvas when the component is unmounted
-			if (fabricCanvasRef.current) {
-				fabricCanvasRef.current.dispose();
-				fabricCanvasRef.current = null;
-			}
-		};
+		init();
 	}, []);
 
 	// Handle tool changes without reinitializing the canvas
@@ -247,9 +382,7 @@ export function Whiteboard() {
 	return (
 		<div className='p-2'>
 			<div className='flex items-center gap-3 bg-gray-100 px-4 py-2 shadow-md sticky top-0 z-10'>
-				{(
-					['draw', 'select', 'rectangle', 'line', 'ellipse', 'clear'] as Tool[]
-				).map((t) => (
+				{toolOptions.map((t) => (
 					<Button
 						key={t}
 						variant={tool === t ? 'default' : 'outline'}
@@ -259,13 +392,12 @@ export function Whiteboard() {
 					</Button>
 				))}
 
-				{/* {tool === 'draw' && ( */}
 				<div className='flex items-center gap-3 ml-6'>
 					<label className='text-sm'>Color:</label>
 					<Input
 						type='color'
 						value={brushColor}
-						onChange={(e) => setBrushColor(e.target.value)}
+						onChange={handleColorChange}
 						className='w-10 h-10 p-0 border-none'
 					/>
 					<label className='text-sm'>Size:</label>
@@ -274,7 +406,7 @@ export function Whiteboard() {
 						max={20}
 						step={1}
 						value={[brushSize]}
-						onValueChange={(val) => setBrushSize(val[0])}
+						onValueChange={handleSizeChange}
 						className='w-32'
 					/>
 				</div>
