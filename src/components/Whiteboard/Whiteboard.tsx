@@ -32,15 +32,18 @@ export function Whiteboard() {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const fabricCanvasRef = useRef<Canvas | null>(null);
 	const isInitializedRef = useRef(false);
-	const [tool, setTool] = useState<Tool>('draw');
+	const [tool, setTool] = useState<Tool>('select');
 	const [brushColor, setBrushColor] = useState('#000000');
 	const [brushSize, setBrushSize] = useState(3);
 	const socketRef = useRef<Socket | null>(null);
+	const [socketDetails, setSocketDetails] = useState<{
+		clientId?: string;
+	} | null>(null);
 
 	const handleToolClick = useCallback((t: Tool) => () => setTool(t), [setTool]);
 
 	const toolOptions = useMemo(
-		() => ['draw', 'select', 'rectangle', 'line', 'ellipse', 'clear'] as Tool[],
+		() => ['select', 'draw', 'rectangle', 'line', 'ellipse', 'clear'] as Tool[],
 		[]
 	);
 
@@ -64,7 +67,12 @@ export function Whiteboard() {
 
 			const socket = await io('http://localhost:8080');
 			socketRef.current = socket;
-			console.log(socket);
+
+			socket.on('connect', () => {
+				setSocketDetails({
+					clientId: socket.id,
+				});
+			});
 
 			FabricObject.prototype.toObject = (function (toObject) {
 				return function (this: FabricObject, properties: string[] = []) {
@@ -133,8 +141,6 @@ export function Whiteboard() {
 
 			// Listen for events from server
 			socket.on('object:added', (objectData) => {
-				console.log('objectData', objectData);
-
 				util
 					.enlivenObjects([objectData])
 					.then(([obj]) => {
@@ -200,7 +206,6 @@ export function Whiteboard() {
 				if (socketRef.current) {
 					socketRef.current.disconnect();
 					socketRef.current = null;
-					console.log('Socket disconnected');
 				}
 
 				// canvas.dispose();
@@ -245,14 +250,6 @@ export function Whiteboard() {
 		let shape: FabricObject | null = null;
 
 		switch (tool) {
-			case 'draw': {
-				canvas.isDrawingMode = true;
-				const brush = new PencilBrush(canvas);
-				brush.color = brushColor;
-				brush.width = brushSize;
-				canvas.freeDrawingBrush = brush;
-				break;
-			}
 			case 'rectangle': {
 				const handleMouseDown = (opt: any) => {
 					const pointer = canvas.getPointer(opt.e);
@@ -374,6 +371,15 @@ export function Whiteboard() {
 				canvas.renderAll();
 				break;
 			}
+			default:
+			case 'draw': {
+				canvas.isDrawingMode = true;
+				const brush = new PencilBrush(canvas);
+				brush.color = brushColor;
+				brush.width = brushSize;
+				canvas.freeDrawingBrush = brush;
+				break;
+			}
 		}
 
 		return cleanup;
@@ -415,6 +421,14 @@ export function Whiteboard() {
 				ref={canvasRef}
 				className='border border-gray-300 rounded shadow w-full h-[calc(100vh-80px)]'
 			/>
+			{socketDetails?.clientId && (
+				<div className='fixed bottom-4 right-4 z-50 p-3 bg-black text-white text-sm rounded-xl shadow-xl opacity-90'>
+					🧩 Connected as:{' '}
+					<span className='font-mono text-green-300'>
+						{socketDetails.clientId}
+					</span>
+				</div>
+			)}
 		</div>
 	);
 }
