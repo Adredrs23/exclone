@@ -9,38 +9,37 @@ import {
 	PencilBrush,
 	FabricObject,
 	util,
+	TPointerEvent,
+	TPointerEventInfo,
 } from 'fabric';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
 import { io, Socket } from 'socket.io-client';
-import { v4 as uuidv4 } from 'uuid';
+import {
+	ExtendedFabricObject,
+	SerializedObjectData,
+} from '@/types/global.types';
+import { WhiteboardState } from './Whiteboard.types';
+import { generateId } from './Whiteboard.utils';
+import { Tool } from '../Toolbar/Toolbar.types';
 
-export function generateId() {
-	return uuidv4();
-}
-
-export type Tool =
-	| 'draw'
-	| 'select'
-	| 'rectangle'
-	| 'line'
-	| 'ellipse'
-	| 'clear';
-
-export function Whiteboard() {
+export const Whiteboard = () => {
 	const canvasRef = useRef<HTMLCanvasElement>(null);
 	const fabricCanvasRef = useRef<Canvas | null>(null);
 	const isInitializedRef = useRef(false);
-	const [tool, setTool] = useState<Tool>('select');
-	const [brushColor, setBrushColor] = useState('#000000');
-	const [brushSize, setBrushSize] = useState(3);
+	const [state, setState] = useState<WhiteboardState>({
+		tool: 'select',
+		brushColor: '#000000',
+		brushSize: 5,
+		socketDetails: null,
+	});
 	const socketRef = useRef<Socket | null>(null);
-	const [socketDetails, setSocketDetails] = useState<{
-		clientId?: string;
-	} | null>(null);
 
-	const handleToolClick = useCallback((t: Tool) => () => setTool(t), [setTool]);
+	const handleToolClick = useCallback(
+		(t: Tool) => () => setState((prev) => ({ ...prev, tool: t })),
+		[setState]
+	);
 
 	const toolOptions = useMemo(
 		() => ['select', 'draw', 'rectangle', 'line', 'ellipse', 'clear'] as Tool[],
@@ -48,12 +47,13 @@ export function Whiteboard() {
 	);
 
 	const handleColorChange = useCallback(
-		(e: React.ChangeEvent<HTMLInputElement>) => setBrushColor(e.target.value),
+		(e: React.ChangeEvent<HTMLInputElement>) =>
+			setState((prev) => ({ ...prev, brushColor: e.target.value })),
 		[]
 	);
 
 	const handleSizeChange = useCallback(
-		(val: number[]) => setBrushSize(val[0]),
+		(val: number[]) => setState((prev) => ({ ...prev, brushSize: val[0] })),
 		[]
 	);
 
@@ -69,9 +69,12 @@ export function Whiteboard() {
 			socketRef.current = socket;
 
 			socket.on('connect', () => {
-				setSocketDetails({
-					clientId: socket.id,
-				});
+				setState((prev) => ({
+					...prev,
+					socketDetails: {
+						clientId: socket.id,
+					},
+				}));
 			});
 
 			FabricObject.prototype.toObject = (function (toObject) {
@@ -115,50 +118,53 @@ export function Whiteboard() {
 
 			// socket events
 			// Emit events to server
-			canvas.on('object:added', (e) => {
+			canvas.on('object:added', (e: { target: ExtendedFabricObject }) => {
 				if (!e.target) return;
 				if (!e.target.id) {
-					e.target.id = generateId(); // Add ID if it doesn't exist
+					e.target.id = generateId();
 				}
 
 				if (e.target.__skipEmit) return;
-				socket.emit('object:added', e.target.toJSON(['id']));
+				socket.emit('object:added', e.target.toJSON());
 			});
 
-			canvas.on('object:modified', (e) => {
+			canvas.on('object:modified', (e: { target: ExtendedFabricObject }) => {
 				const obj = e.target;
 				if (!obj || obj.__skipEmit) return;
-
-				socket.emit('object:modified', obj.toJSON(['id']));
+				socket.emit('object:modified', obj.toJSON());
 			});
 
-			canvas.on('object:removed', (e) => {
+			canvas.on('object:removed', (e: { target: ExtendedFabricObject }) => {
 				const obj = e.target;
 				if (!obj || obj.__skipEmit) return;
-
-				socket.emit('object:removed', obj.toJSON(['id']));
+				socket.emit('object:removed', obj.toJSON());
 			});
 
 			// Listen for events from server
-			socket.on('object:added', (objectData) => {
+			socket.on('object:added', (objectData: SerializedObjectData) => {
 				util
 					.enlivenObjects([objectData])
 					.then(([obj]) => {
+						const extendedObj = obj as ExtendedFabricObject;
 						if (
-							!canvas.getObjects().find((o) => o.get('id') === obj.get('id'))
+							!canvas
+								.getObjects()
+								.find((o) => (o as ExtendedFabricObject).id === extendedObj.id)
 						) {
-							obj.__skipEmit = true;
-							canvas.add(obj);
+							extendedObj.__skipEmit = true;
+							canvas.add(extendedObj);
 							canvas.renderAll();
 						}
 					})
 					.catch(console.error);
 			});
 
-			socket.on('object:modified', (objectData) => {
+			socket.on('object:modified', (objectData: SerializedObjectData) => {
 				const obj = canvas
 					.getObjects()
-					.find((o) => o.get('id') === objectData.id);
+					.find(
+						(o) => (o as ExtendedFabricObject).id === objectData.id
+					) as ExtendedFabricObject;
 				if (obj) {
 					obj.__skipEmit = true;
 					obj.set({ ...objectData });
@@ -166,10 +172,12 @@ export function Whiteboard() {
 				}
 			});
 
-			socket.on('object:removed', (objectData) => {
+			socket.on('object:removed', (objectData: SerializedObjectData) => {
 				const obj = canvas
 					.getObjects()
-					.find((o) => o.get('id') === objectData.id);
+					.find(
+						(o) => (o as ExtendedFabricObject).id === objectData.id
+					) as ExtendedFabricObject;
 				if (obj) {
 					obj.__skipEmit = true;
 					canvas.remove(obj);
@@ -181,16 +189,20 @@ export function Whiteboard() {
 				canvas.clear();
 			});
 
-			socket.on('object:sync', (payload) => {
-				util.enlivenObjects(payload.objects).then((objects) => {
-					canvas.clear();
-					objects.forEach((obj) => {
-						obj.__skipEmit = true;
-						canvas.add(obj);
+			socket.on(
+				'object:sync',
+				(payload: { objects: SerializedObjectData[] }) => {
+					util.enlivenObjects(payload.objects).then((objects) => {
+						canvas.clear();
+						objects.forEach((obj) => {
+							const extendedObj = obj as ExtendedFabricObject;
+							extendedObj.__skipEmit = true;
+							canvas.add(extendedObj);
+						});
+						canvas.renderAll();
 					});
-					canvas.renderAll();
-				});
-			});
+				}
+			);
 
 			window.addEventListener('resize', resize);
 			window.addEventListener('keydown', handleKeyDown);
@@ -237,7 +249,7 @@ export function Whiteboard() {
 			canvas.off('mouse:up');
 
 			// Make objects non-selectable for non-select tools
-			if (tool !== 'select') {
+			if (state.tool !== 'select') {
 				canvas.forEachObject((obj) => (obj.selectable = false));
 			}
 		};
@@ -249,26 +261,25 @@ export function Whiteboard() {
 		let startY = 0;
 		let shape: FabricObject | null = null;
 
-		switch (tool) {
+		switch (state.tool) {
 			case 'rectangle': {
-				const handleMouseDown = (opt: any) => {
+				const handleMouseDown = (opt: TPointerEventInfo<TPointerEvent>) => {
 					const pointer = canvas.getPointer(opt.e);
 					startX = pointer.x;
 					startY = pointer.y;
 
-					// Create shape but don't add to canvas yet
 					shape = new Rect({
 						left: startX,
 						top: startY,
 						fill: 'transparent',
-						stroke: brushColor,
-						strokeWidth: brushSize,
+						stroke: state.brushColor,
+						strokeWidth: state.brushSize,
 						width: 0,
 						height: 0,
 					});
 				};
 
-				const handleMouseMove = (opt: any) => {
+				const handleMouseMove = (opt: TPointerEventInfo<TPointerEvent>) => {
 					if (!shape) return;
 					const pointer = canvas.getPointer(opt.e);
 					const rect = shape as Rect;
@@ -279,23 +290,18 @@ export function Whiteboard() {
 						top: Math.min(startY, pointer.y),
 					});
 					if (shape.canvas) {
-						// If already on canvas
 						canvas.renderAll();
 					} else {
-						// If not on canvas, show temporary version
 						canvas.add(shape);
 					}
 				};
 
 				const handleMouseUp = () => {
 					if (shape) {
-						// If shape exists and has non-zero dimensions
 						if (shape.width !== 0 && shape.height !== 0) {
-							// Remove temporary shape if it exists
 							if (shape.canvas) {
 								canvas.remove(shape);
 							}
-							// Add final shape - this will trigger object:added
 							canvas.add(shape);
 							canvas.renderAll();
 						}
@@ -309,41 +315,36 @@ export function Whiteboard() {
 				break;
 			}
 			case 'line': {
-				const handleMouseDown = (opt: any) => {
+				const handleMouseDown = (opt: TPointerEventInfo<TPointerEvent>) => {
 					const pointer = canvas.getPointer(opt.e);
 					startX = pointer.x;
 					startY = pointer.y;
 
-					// Create shape but don't add to canvas yet
 					shape = new Line([startX, startY, startX, startY], {
-						stroke: brushColor,
-						strokeWidth: brushSize,
+						stroke: state.brushColor,
+						strokeWidth: state.brushSize,
 					});
 				};
 
-				const handleMouseMove = (opt: any) => {
+				const handleMouseMove = (opt: TPointerEventInfo<TPointerEvent>) => {
 					if (!shape) return;
 					const pointer = canvas.getPointer(opt.e);
 					const line = shape as Line;
 					line.set({ x2: pointer.x, y2: pointer.y });
 					if (shape.canvas) {
-						// If already on canvas
 						canvas.renderAll();
 					} else {
-						// If not on canvas, show temporary version
 						canvas.add(shape);
 					}
 				};
 
 				const handleMouseUp = () => {
 					if (shape) {
-						// If shape exists and has non-zero length
-						if (shape.x2 !== startX || shape.y2 !== startY) {
-							// Remove temporary shape if it exists
+						const line = shape as Line;
+						if (line.x2 !== startX || line.y2 !== startY) {
 							if (shape.canvas) {
 								canvas.remove(shape);
 							}
-							// Add final shape - this will trigger object:added
 							canvas.add(shape);
 							canvas.renderAll();
 						}
@@ -357,24 +358,23 @@ export function Whiteboard() {
 				break;
 			}
 			case 'ellipse': {
-				const handleMouseDown = (opt: any) => {
+				const handleMouseDown = (opt: TPointerEventInfo<TPointerEvent>) => {
 					const pointer = canvas.getPointer(opt.e);
 					startX = pointer.x;
 					startY = pointer.y;
 
-					// Create shape but don't add to canvas yet
 					shape = new Ellipse({
 						left: startX,
 						top: startY,
 						rx: 0,
 						ry: 0,
 						fill: 'transparent',
-						stroke: brushColor,
-						strokeWidth: brushSize,
+						stroke: state.brushColor,
+						strokeWidth: state.brushSize,
 					});
 				};
 
-				const handleMouseMove = (opt: any) => {
+				const handleMouseMove = (opt: TPointerEventInfo<TPointerEvent>) => {
 					if (!shape) return;
 					const pointer = canvas.getPointer(opt.e);
 					const ellipse = shape as Ellipse;
@@ -385,23 +385,19 @@ export function Whiteboard() {
 						top: Math.min(startY, pointer.y),
 					});
 					if (shape.canvas) {
-						// If already on canvas
 						canvas.renderAll();
 					} else {
-						// If not on canvas, show temporary version
 						canvas.add(shape);
 					}
 				};
 
 				const handleMouseUp = () => {
 					if (shape) {
-						// If shape exists and has non-zero dimensions
-						if (shape.rx !== 0 && shape.ry !== 0) {
-							// Remove temporary shape if it exists
+						const ellipse = shape as Ellipse;
+						if (ellipse.rx !== 0 && ellipse.ry !== 0) {
 							if (shape.canvas) {
 								canvas.remove(shape);
 							}
-							// Add final shape - this will trigger object:added
 							canvas.add(shape);
 							canvas.renderAll();
 						}
@@ -423,21 +419,24 @@ export function Whiteboard() {
 				canvas.clear();
 				canvas.backgroundColor = '#fff';
 				canvas.renderAll();
+				if (socketRef.current) {
+					socketRef.current.emit('canvas:clear');
+				}
 				break;
 			}
 			default:
 			case 'draw': {
 				canvas.isDrawingMode = true;
 				const brush = new PencilBrush(canvas);
-				brush.color = brushColor;
-				brush.width = brushSize;
+				brush.color = state.brushColor;
+				brush.width = state.brushSize;
 				canvas.freeDrawingBrush = brush;
 				break;
 			}
 		}
 
 		return cleanup;
-	}, [tool, brushColor, brushSize]);
+	}, [state.tool, state.brushColor, state.brushSize]);
 
 	return (
 		<div className='p-2'>
@@ -445,7 +444,7 @@ export function Whiteboard() {
 				{toolOptions.map((t) => (
 					<Button
 						key={t}
-						variant={tool === t ? 'default' : 'outline'}
+						variant={state.tool === t ? 'default' : 'outline'}
 						onClick={handleToolClick(t)}
 					>
 						{t.charAt(0).toUpperCase() + t.slice(1)}
@@ -456,7 +455,7 @@ export function Whiteboard() {
 					<label className='text-sm'>Color:</label>
 					<Input
 						type='color'
-						value={brushColor}
+						value={state.brushColor}
 						onChange={handleColorChange}
 						className='w-10 h-10 p-0 border-none'
 					/>
@@ -465,7 +464,7 @@ export function Whiteboard() {
 						min={1}
 						max={20}
 						step={1}
-						value={[brushSize]}
+						value={[state.brushSize]}
 						onValueChange={handleSizeChange}
 						className='w-32'
 					/>
@@ -475,14 +474,14 @@ export function Whiteboard() {
 				ref={canvasRef}
 				className='border border-gray-300 rounded shadow w-full h-[calc(100vh-80px)]'
 			/>
-			{socketDetails?.clientId && (
+			{state.socketDetails?.clientId && (
 				<div className='fixed bottom-4 right-4 z-50 p-3 bg-black text-white text-sm rounded-xl shadow-xl opacity-90'>
 					🧩 Connected as:{' '}
 					<span className='font-mono text-green-300'>
-						{socketDetails.clientId}
+						{state.socketDetails.clientId}
 					</span>
 				</div>
 			)}
 		</div>
 	);
-}
+};
