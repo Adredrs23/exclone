@@ -256,6 +256,7 @@ export function Whiteboard() {
 					startX = pointer.x;
 					startY = pointer.y;
 
+					// Create shape but don't add to canvas yet
 					shape = new Rect({
 						left: startX,
 						top: startY,
@@ -265,7 +266,6 @@ export function Whiteboard() {
 						width: 0,
 						height: 0,
 					});
-					canvas.add(shape);
 				};
 
 				const handleMouseMove = (opt: any) => {
@@ -278,10 +278,28 @@ export function Whiteboard() {
 						left: Math.min(startX, pointer.x),
 						top: Math.min(startY, pointer.y),
 					});
-					canvas.renderAll();
+					if (shape.canvas) {
+						// If already on canvas
+						canvas.renderAll();
+					} else {
+						// If not on canvas, show temporary version
+						canvas.add(shape);
+					}
 				};
 
 				const handleMouseUp = () => {
+					if (shape) {
+						// If shape exists and has non-zero dimensions
+						if (shape.width !== 0 && shape.height !== 0) {
+							// Remove temporary shape if it exists
+							if (shape.canvas) {
+								canvas.remove(shape);
+							}
+							// Add final shape - this will trigger object:added
+							canvas.add(shape);
+							canvas.renderAll();
+						}
+					}
 					shape = null;
 				};
 
@@ -296,11 +314,11 @@ export function Whiteboard() {
 					startX = pointer.x;
 					startY = pointer.y;
 
+					// Create shape but don't add to canvas yet
 					shape = new Line([startX, startY, startX, startY], {
 						stroke: brushColor,
 						strokeWidth: brushSize,
 					});
-					canvas.add(shape);
 				};
 
 				const handleMouseMove = (opt: any) => {
@@ -308,10 +326,28 @@ export function Whiteboard() {
 					const pointer = canvas.getPointer(opt.e);
 					const line = shape as Line;
 					line.set({ x2: pointer.x, y2: pointer.y });
-					canvas.renderAll();
+					if (shape.canvas) {
+						// If already on canvas
+						canvas.renderAll();
+					} else {
+						// If not on canvas, show temporary version
+						canvas.add(shape);
+					}
 				};
 
 				const handleMouseUp = () => {
+					if (shape) {
+						// If shape exists and has non-zero length
+						if (shape.x2 !== startX || shape.y2 !== startY) {
+							// Remove temporary shape if it exists
+							if (shape.canvas) {
+								canvas.remove(shape);
+							}
+							// Add final shape - this will trigger object:added
+							canvas.add(shape);
+							canvas.renderAll();
+						}
+					}
 					shape = null;
 				};
 
@@ -326,6 +362,7 @@ export function Whiteboard() {
 					startX = pointer.x;
 					startY = pointer.y;
 
+					// Create shape but don't add to canvas yet
 					shape = new Ellipse({
 						left: startX,
 						top: startY,
@@ -335,7 +372,6 @@ export function Whiteboard() {
 						stroke: brushColor,
 						strokeWidth: brushSize,
 					});
-					canvas.add(shape);
 				};
 
 				const handleMouseMove = (opt: any) => {
@@ -348,10 +384,28 @@ export function Whiteboard() {
 						left: Math.min(startX, pointer.x),
 						top: Math.min(startY, pointer.y),
 					});
-					canvas.renderAll();
+					if (shape.canvas) {
+						// If already on canvas
+						canvas.renderAll();
+					} else {
+						// If not on canvas, show temporary version
+						canvas.add(shape);
+					}
 				};
 
 				const handleMouseUp = () => {
+					if (shape) {
+						// If shape exists and has non-zero dimensions
+						if (shape.rx !== 0 && shape.ry !== 0) {
+							// Remove temporary shape if it exists
+							if (shape.canvas) {
+								canvas.remove(shape);
+							}
+							// Add final shape - this will trigger object:added
+							canvas.add(shape);
+							canvas.renderAll();
+						}
+					}
 					shape = null;
 				};
 
